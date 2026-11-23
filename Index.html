@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pemetaan Lokasi Aktual Siswa MI/SD</title>
+    
+    <!-- CSS Leaflet.js -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        html, body { margin: 0; padding: 0; height: 100%; width: 100%; display: flex; flex-direction: column; }
+        header { background-color: #1b5e20; color: white; padding: 12px 20px; text-align: center; }
+        header h2 { margin: 0; font-size: 1.3rem; }
+        
+        .container { display: flex; flex: 1; height: calc(100vh - 50px); overflow: hidden; }
+        
+        /* Panel Kiri */
+        .sidebar { width: 360px; background: #f8f9fa; padding: 15px; overflow-y: auto; border-right: 1px solid #ddd; }
+        .form-group { margin-bottom: 10px; }
+        label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.85rem; }
+        input, select, textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
+        
+        button { width: 100%; padding: 10px; background-color: #2e7d32; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; margin-top: 5px; }
+        button:hover { background-color: #1b5e20; }
+        
+        .btn-gps { background-color: #0277bd; margin-bottom: 5px; }
+        .btn-gps:hover { background-color: #01579b; }
+        
+        .btn-danger { background-color: #c62828; padding: 4px 8px; font-size: 0.8rem; width: auto; margin-top: 5px; }
+        .btn-danger:hover { background-color: #8e0000; }
+
+        .student-list { margin-top: 15px; border-top: 2px solid #ddd; padding-top: 10px; }
+        .student-card { background: white; padding: 10px; border: 1px solid #e0e0e0; border-radius: 5px; margin-bottom: 8px; font-size: 0.85rem; }
+        .student-card strong { color: #1b5e20; font-size: 0.95rem; }
+        .status-gps { font-size: 0.8rem; color: #0277bd; margin-bottom: 8px; display: block; }
+
+        /* Panel Kanan (Peta wajib punya tinggi eksplisit) */
+        #map { flex: 1; height: 100%; min-height: 400px; background-color: #e5e3df; z-index: 1; }
+
+        @media (max-width: 768px) {
+            .container { flex-direction: column; }
+            .sidebar { width: 100%; height: 45%; }
+            #map { width: 100%; height: 55%; }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h2>Peta Sebaran Lokasi Aktual Siswa MI / SD</h2>
+</header>
+
+<div class="container">
+    <div class="sidebar">
+        <form id="studentForm">
+            <div class="form-group">
+                <label>Nama Lengkap Siswa</label>
+                <input type="text" id="nama" placeholder="Contoh: Siti Aminah" required>
+            </div>
+            <div class="form-group">
+                <label>Kelas</label>
+                <select id="kelas" required>
+                    <option value="">-- Pilih Kelas --</option>
+                    <option value="Kelas 1">Kelas 1</option>
+                    <option value="Kelas 2">Kelas 2</option>
+                    <option value="Kelas 3">Kelas 3</option>
+                    <option value="Kelas 4">Kelas 4</option>
+                    <option value="Kelas 5">Kelas 5</option>
+                    <option value="Kelas 6">Kelas 6</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Alamat / Patokan Rumah</label>
+                <textarea id="alamat" rows="2" placeholder="Contoh: Dekat Masjid Al-Ikhlas, RT 01/02" required></textarea>
+            </div>
+            <div class="form-group">
+                <label>Titik Lokasi Rumah</label>
+                <button type="button" class="btn-gps" onclick="ambilLokasiAktual()">📍 Ambil Lokasi GPS Saat Ini</button>
+                <span id="statusGps" class="status-gps">Klik tombol di atas atau klik langsung pada peta.</span>
+                
+                <div style="display: flex; gap: 5px;">
+                    <input type="text" id="lat" placeholder="Latitude" readonly required>
+                    <input type="text" id="lng" placeholder="Longitude" readonly required>
+                </div>
+            </div>
+            <button type="submit">Simpan Lokasi Siswa</button>
+        </form>
+
+        <div class="student-list">
+            <h4>Daftar Siswa Terdata (<span id="totalSiswa">0</span>)</h4>
+            <div id="listContainer"></div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+</div>
+
+<!-- JS Leaflet.js -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+    // Koordinat default sekolah (Sesuaikan dengan titik sekolah Anda)
+    const sekolahLat = -6.9630038;
+    const sekolahLng = 107.6767333;
+
+    // 1. Peta Dasar yang Stabil untuk File Lokal (Google Streets, Google Hybrid/Satelit, & Carto)
+    const googleStreets = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+        maxZoom: 20,
+        attribution: 'Google Maps'
+    });
+
+    const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+        maxZoom: 20,
+        attribution: 'Google Satellite'
+    });
+
+    const cartoVoyager = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+        attribution: '&copy; CartoDB'
+    });
+
+    // Inisialisasi Peta (Default menggunakan Google Streets agar jalan & nama tempat jelas)
+    const map = L.map('map', {
+        center: [sekolahLat, sekolahLng],
+        zoom: 15,
+        layers: [googleStreets]
+    });
+
+    // Memaksa peta merender ulang ukurannya agar tidak abu-abu/kosong
+    setTimeout(() => {
+        map.invalidateSize();
+    }, 300);
+
+    // Pilihan Peta di Pojok Kanan Atas
+    const baseMaps = {
+        "Peta Jalan (Google)": googleStreets,
+        "Satelit + Nama Jalan": googleHybrid,
+        "Peta Bersih (Carto)": cartoVoyager
+    };
+    L.control.layers(baseMaps).addTo(map);
+
+    // Marker Sekolah
+    const schoolIcon = L.icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+        iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34]
+    });
+
+    L.marker([sekolahLat, sekolahLng], { icon: schoolIcon })
+        .addTo(map)
+        .bindPopup("<b>Lokasi Sekolah (MI/SD)</b>")
+        .openPopup();
+
+    let tempMarker = null;
+    let accuracyCircle = null;
+
+    function setTitikTerpilih(lat, lng, akurasi = null) {
+        document.getElementById('lat').value = lat.toFixed(6);
+        document.getElementById('lng').value = lng.toFixed(6);
+
+        if (tempMarker) map.removeLayer(tempMarker);
+        if (accuracyCircle) map.removeLayer(accuracyCircle);
+
+        tempMarker = L.marker([lat, lng]).addTo(map)
+            .bindPopup(`Titik Terpilih:<br>${lat.toFixed(6)}, ${lng.toFixed(6)}`).openPopup();
+
+        if (akurasi) {
+            accuracyCircle = L.circle([lat, lng], { radius: akurasi, color: '#0277bd', fillOpacity: 0.15 }).addTo(map);
+        }
+
+        map.setView([lat, lng], 17);
+    }
+
+    // 2. Fungsi Mengambil Lokasi Aktual Perangkat (GPS)
+    function ambilLokasiAktual() {
+        const statusText = document.getElementById('statusGps');
+        
+        if (!navigator.geolocation) {
+            statusText.innerText = "Browser Anda tidak mendukung fitur GPS.";
+            return;
+        }
+
+        statusText.innerText = "Mendeteksi lokasi GPS aktual...";
+
+        navigator.geolocation.getCurrentPosition(
+            (posisi) => {
+                const lat = posisi.coords.latitude;
+                const lng = posisi.coords.longitude;
+                const akurasi = Math.round(posisi.coords.accuracy);
+
+                setTitikTerpilih(lat, lng, akurasi);
+                statusText.innerText = `Lokasi ditemukan! (Akurasi: ±${akurasi} m)`;
+            },
+            (error) => {
+                let pesan = "Gagal mengambil lokasi.";
+                if (error.code === 1) pesan = "Izin lokasi ditolak. Aktifkan izin lokasi di browser.";
+                else if (error.code === 2) pesan = "Sinyal GPS tidak tersedia.";
+                else if (error.code === 3) pesan = "Waktu pencarian GPS habis.";
+                statusText.innerText = pesan;
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    }
+
+    // 3. Klik Manual di Peta
+    map.on('click', function(e) {
+        setTitikTerpilih(e.latlng.lat, e.latlng.lng);
+        document.getElementById('statusGps').innerText = "Titik dipilih secara manual dari peta.";
+    });
+
+    // 4. Manajemen Data Siswa
+    let dataSiswa = JSON.parse(localStorage.getItem('pemetaan_siswa')) || [];
+    let markersLayer = L.layerGroup().addTo(map);
+
+    function hitungJarak(lat1, lon1, lat2, lon2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2);
+    }
+
+    function renderData() {
+        markersLayer.clearLayers();
+        const listContainer = document.getElementById('listContainer');
+        listContainer.innerHTML = '';
+        document.getElementById('totalSiswa').innerText = dataSiswa.length;
+
+        dataSiswa.forEach((siswa, index) => {
+            const jarak = hitungJarak(sekolahLat, sekolahLng, siswa.lat, siswa.lng);
+
+            const marker = L.marker([siswa.lat, siswa.lng]).bindPopup(`
+                <b>${siswa.nama}</b> (${siswa.kelas})<br>
+                Alamat: ${siswa.alamat}<br>
+                Jarak ke Sekolah: ± <b>${jarak} km</b><br>
+                <a href="https://www.google.com/maps?q=${siswa.lat},${siswa.lng}" target="_blank">Buka di Google Maps</a>
+            `);
+            markersLayer.addLayer(marker);
+
+            const card = document.createElement('div');
+            card.className = 'student-card';
+            card.innerHTML = `
+                <strong>${siswa.nama}</strong> (${siswa.kelas})<br>
+                <span>${siswa.alamat}</span><br>
+                <small>Jarak: ± ${jarak} km</small><br>
+                <button class="btn-danger" onclick="hapusSiswa(${index})">Hapus</button>
+            `;
+            listContainer.appendChild(card);
+        });
+    }
+
+    document.getElementById('studentForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const siswaBaru = {
+            nama: document.getElementById('nama').value,
+            kelas: document.getElementById('kelas').value,
+            alamat: document.getElementById('alamat').value,
+            lat: parseFloat(document.getElementById('lat').value),
+            lng: parseFloat(document.getElementById('lng').value)
+        };
+
+        dataSiswa.push(siswaBaru);
+        localStorage.setItem('pemetaan_siswa', JSON.stringify(dataSiswa));
+
+        if (tempMarker) map.removeLayer(tempMarker);
+        if (accuracyCircle) map.removeLayer(accuracyCircle);
+        document.getElementById('statusGps').innerText = "Data tersimpan!";
+        this.reset();
+        renderData();
+    });
+
+    function hapusSiswa(index) {
+        if (confirm('Hapus data lokasi siswa ini?')) {
+            dataSiswa.splice(index, 1);
+            localStorage.setItem('pemetaan_siswa', JSON.stringify(dataSiswa));
+            renderData();
+        }
+    }
+
+    renderData();
+</script>
+
+</body>
+</html>
